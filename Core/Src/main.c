@@ -48,7 +48,9 @@ UART_HandleTypeDef huart3;
 PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 /* USER CODE BEGIN PV */
-
+extern char _binary_font_hex_start;
+extern char _binary_font_hex_end;
+extern char _binary_font_hex_size;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -167,6 +169,10 @@ void handle_new_byte(uint8_t byte) {
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 char stdinbuffer[256];
+
+size_t get_font_size() {
+	return (size_t)(&_binary_font_hex_size);
+}
 /* USER CODE END 0 */
 
 /**
@@ -206,6 +212,15 @@ int main(void)
 
   printf("\n----- PROGRAM BEGIN -----\n");
   fflush(stdout);
+
+  printf("Size: %lu\n", get_font_size());
+  uint8_t *test_data = &_binary_font_hex_start;
+  for(int i = 0; i < get_font_size(); i++) {
+	  putc(test_data[i], stdout);
+  }
+  putc('\n', stdout);
+  fflush(stdout);
+  Error_Handler();
   kline_5baud_gpio_init();
   HAL_Delay(4000);
   kw2_state = 0;
