@@ -42,7 +42,8 @@ extern "C" {
 
 /* Exported constants --------------------------------------------------------*/
 /* USER CODE BEGIN EC */
-
+#define KLINE_INIT_ADDRESS 0x33
+#define KLINE_INIT_SYNC_BYTE 0x55
 /* USER CODE END EC */
 
 /* Exported macro ------------------------------------------------------------*/

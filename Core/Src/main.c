@@ -64,49 +64,41 @@ static void run_init(uint8_t address);
 static void kline_5baud_gpio_init(void);
 static void kline_5baud_gpio_deinit(void);
 
-volatile uint8_t data;
-volatile uint8_t bits_left = 0;
+volatile uint8_t kline_init_data;
+volatile uint8_t kline_init_bits_left = 0;
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 	if(htim != &htim7)
 		return;
 
-	if(bits_left == 9) {
-		bits_left--;
+	// aaargh
+	if(kline_init_bits_left == 9) {
+		kline_init_bits_left--;
 		return;
 	}
 
-	if(!bits_left) {
+	if(!kline_init_bits_left) {
     	HAL_GPIO_WritePin(KLINE_OUT_GPIO_Port, KLINE_OUT_Pin, GPIO_PIN_SET);
-    	LOG("Setting pin to 1 @ %lu\n", HAL_GetTick());
 		kline_5baud_gpio_deinit();
 		HAL_ASSERT(HAL_TIM_Base_Stop_IT(&htim7));
-		LOG("Initialization done.\n");
-		LOG("Tick: %lu\n", HAL_GetTick());
+		printf("Initialization done.\n");
 		fflush(stdout);
 
 		// start listening
 		__HAL_UART_ENABLE_IT(&huart4, UART_IT_RXNE);
 	} else {
-		GPIO_PinState new_state = (data & 0x80) ? GPIO_PIN_SET : GPIO_PIN_RESET;
-		data <<= 1;
+		GPIO_PinState new_state = (kline_init_data & 0x80) ? GPIO_PIN_SET : GPIO_PIN_RESET;
+		kline_init_data <<= 1;
 		HAL_GPIO_WritePin(KLINE_OUT_GPIO_Port, KLINE_OUT_Pin, new_state);
-    	LOG("Setting pin to %i @ %lu\n", new_state, HAL_GetTick());
-		fflush(stdout);
-
-		bits_left--;
+		kline_init_bits_left--;
 	}
 }
 
 void run_init(uint8_t address) {
-	data = ~address;
-	bits_left = 9;
+	kline_init_data = ~address;
+	kline_init_bits_left = 9;
 	HAL_ASSERT(HAL_TIM_Base_Start_IT(&htim7));
 	htim7.Instance->CNT = 0;
 	HAL_GPIO_WritePin(KLINE_OUT_GPIO_Port, KLINE_OUT_Pin, GPIO_PIN_RESET);
-	LOG("Setting pin to 0 @ %lu\n", HAL_GetTick());
-	LOG("Starting initialization.\n");
-	LOG("Tick: %lu\n", HAL_GetTick());
-	fflush(stdout);
 }
 
 static void kline_5baud_gpio_init(void) {
@@ -117,7 +109,6 @@ static void kline_5baud_gpio_init(void) {
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     HAL_GPIO_Init(KLINE_OUT_GPIO_Port, &GPIO_InitStruct);
 	HAL_GPIO_WritePin(KLINE_OUT_GPIO_Port, KLINE_OUT_Pin, GPIO_PIN_SET);
-	LOG("Setting pin to 1 @ %lu\n", HAL_GetTick());
 }
 
 static void kline_5baud_gpio_deinit(void) {
@@ -130,46 +121,46 @@ static void kline_5baud_gpio_deinit(void) {
     HAL_GPIO_Init(KLINE_OUT_GPIO_Port, &GPIO_InitStruct);
 }
 
-uint8_t uart_data_buffer[256];
-void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
-	printf("Transmit complete!\n");
-	fflush(stdout);
-}
+enum kline_uart_read_state {
+	WAITING_FOR_SYNC,
+	WAITING_FOR_KW1,
+	WAITING_FOR_KW2,
+	WAITING_FOR_NOT_ADDR,	// inverse of KLINE_INIT_ADDRESS
+	INIT_DONE,
+};
 
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-	printf("Receive complete!\n");
-	for(int i = 0; i < 3; i++) {
-		printf("Byte: %x\n", uart_data_buffer[i]);
-	}
-	fflush(stdout);
-}
-
-void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
-	printf("UART error!\n");
-	fflush(stdout);
-}
-
-volatile uint8_t kw2_state;
-volatile uint8_t not_kw2;
+volatile enum kline_uart_read_state kw2_state = WAITING_FOR_SYNC;
+volatile uint8_t not_kw2;	// inverse of the KeyWord2, supplied by the car during initialization
 void handle_new_byte(uint8_t byte) {
-	printf("New byte %x\n", byte);
-	fflush(stdout);
+	printf("Received byte %x at state %u\n", byte, kw2_state);
+
+	const uint8_t KLINE_INIT_ADDRESS_INVERTED = (~(KLINE_INIT_ADDRESS)) & 0xff;
 	switch(kw2_state) {
-	case 0:
-		if(byte == 0x55) {
-			kw2_state = 1;
+	case WAITING_FOR_SYNC:
+		if(byte == KLINE_INIT_SYNC_BYTE) {
+			kw2_state = WAITING_FOR_KW1;
 		}
 		break;
-	case 1:
-		kw2_state = 2;
+	case WAITING_FOR_KW1:
+		kw2_state = WAITING_FOR_KW2;
 		break;
-	case 2:
-		kw2_state = 3;
+	case WAITING_FOR_KW2:
+		kw2_state = WAITING_FOR_NOT_ADDR;
 		not_kw2 = ~byte;
 		break;
-	default:
-		LOG("WARN: received %x\n", byte);
+	case WAITING_FOR_NOT_ADDR:
+		if(byte != KLINE_INIT_ADDRESS_INVERTED) {
+			LOG("WARN: Expecting %x, found %x\n", KLINE_INIT_ADDRESS_INVERTED, byte);
+		} else {
+			kw2_state = INIT_DONE;
+		}
+		break;
+	case INIT_DONE:
+		LOG("WARN: Received %x\n", byte);
+		break;
 	}
+	printf("new state %u\n", kw2_state);
+	fflush(stdout);
 }
 /* USER CODE END PFP */
 
@@ -215,34 +206,32 @@ int main(void)
 
   printf("\n----- PROGRAM BEGIN -----\n");
   fflush(stdout);
+  kline_5baud_gpio_init();
+  HAL_Delay(4000);
+  kw2_state = 0;
+  printf("Running init with address " STR(KLINE_INIT_ADDRESS) "\n");
+  fflush(stdout);
+  run_init(KLINE_INIT_ADDRESS);
+  while(kw2_state != WAITING_FOR_NOT_ADDR)
+    ;
 
-  /*for(int i = 0; i < 0x10; i++) uart_data_buffer[i] = 0xa + i;
-  if(HAL_UART_Receive_IT(&huart4, uart_data_buffer, sizeof(uart_data_buffer)) != HAL_OK) {
-	  printf("Failed receive...\n");
-	  fflush(stdout);
-	  Error_Handler();
-  }
+  HAL_Delay(30);
+
+  uint8_t data = not_kw2;
+  HAL_ASSERT(HAL_UART_Transmit(&huart4, &data, 1, 1000));
+  printf("Sent %x\n", data);
+
+  while(kw2_state != INIT_DONE)
+	  ;
+
   HAL_Delay(100);
-  uint8_t test_data[] = {0x15, 0x14, 0x44, 0x14, 0x69};
-  if(HAL_UART_Transmit_IT(&huart4, test_data, 5) != HAL_OK) {
-	  printf("Failed transmit...\n");
-	  fflush(stdout);
-	  Error_Handler();
+  printf("Sending first request...\n");
+
+  uint8_t first_request[] = {0x68, 0x6a, 0xf1, 0x01, 0x00, 0xc4};
+  for(int i = 0; i < sizeof(first_request); i++) {
+	  HAL_ASSERT(HAL_UART_Transmit(&huart4, first_request + i, 1, 1000));
+	  HAL_Delay(6);
   }
-
-  HAL_Delay(2000);
-  uint16_t received = huart4.RxXferSize - huart4.RxXferCount;
-  if(HAL_UART_AbortReceive(&huart4) != HAL_OK) {
-	  printf("Failed exiting...\n");
-	  fflush(stdout);
-	  Error_Handler();
-  }
-
-  printf("Received a total of %u bytes\n", received);
-  for(int i = 0; i < received; i++) {
-	  printf("Byte #%u: 0x%x\n", i+1, uart_data_buffer[i]);
-  }*/
-
 
   /* USER CODE END 2 */
 
@@ -250,47 +239,7 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	kline_5baud_gpio_init();
-	HAL_Delay(4000);
-	unsigned int addr = -1;
-	do {
-		printf("Waiting for address: "); fflush(stdout);
-		scanf("%x", &addr);
-	} while(addr > 0xff);
-
-	printf("Sending %x...\n", addr);
-	kw2_state = 0;
-	run_init(addr);
-	while(kw2_state != 3)
-		;
-
-	HAL_Delay(30);
-
-	uint8_t data = not_kw2;
-	HAL_ASSERT(HAL_UART_Transmit(&huart4, &data, 1, 1000));
-	printf("Sending %x\n", not_kw2);
-
-	while(1)
-		;
-
-	/*
-	uint8_t rx[16] = {0};
-	HAL_UART_Receive(&huart4, rx, sizeof(rx), 6000);
-	for(int i = 0; i < sizeof(rx); i++) {
-		printf("%x ", rx[i]);
-	}
-	printf("\n");
-	fflush(stdout);
-
-	int i;
-	for(i = 0; i < sizeof(rx); i++) if(rx[i] == 0x55) break;
-	if(rx[i] != 0x55) {
-		printf("Not 55\n");
-		fflush(stdout);
-		continue;
-	}
-	*/
-
+	// ...
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
