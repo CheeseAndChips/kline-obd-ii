@@ -42,6 +42,7 @@
 /* Private variables ---------------------------------------------------------*/
 TIM_HandleTypeDef htim7;
 
+UART_HandleTypeDef huart4;
 UART_HandleTypeDef huart3;
 
 PCD_HandleTypeDef hpcd_USB_OTG_FS;
@@ -56,11 +57,119 @@ static void MX_GPIO_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_USB_OTG_FS_PCD_Init(void);
 static void MX_TIM7_Init(void);
+static void MX_UART4_Init(void);
 /* USER CODE BEGIN PFP */
 
+static void run_init(uint8_t address);
+static void kline_5baud_gpio_init(void);
+static void kline_5baud_gpio_deinit(void);
+
+volatile uint8_t data;
+volatile uint8_t bits_left = 0;
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
-	printf("Tick %lu\n", HAL_GetTick());
+	if(htim != &htim7)
+		return;
+
+	if(bits_left == 9) {
+		bits_left--;
+		return;
+	}
+
+	if(!bits_left) {
+    	HAL_GPIO_WritePin(KLINE_OUT_GPIO_Port, KLINE_OUT_Pin, GPIO_PIN_SET);
+    	LOG("Setting pin to 1 @ %lu\n", HAL_GetTick());
+		kline_5baud_gpio_deinit();
+		HAL_ASSERT(HAL_TIM_Base_Stop_IT(&htim7));
+		LOG("Initialization done.\n");
+		LOG("Tick: %lu\n", HAL_GetTick());
+		fflush(stdout);
+
+		// start listening
+		__HAL_UART_ENABLE_IT(&huart4, UART_IT_RXNE);
+	} else {
+		GPIO_PinState new_state = (data & 0x80) ? GPIO_PIN_SET : GPIO_PIN_RESET;
+		data <<= 1;
+		HAL_GPIO_WritePin(KLINE_OUT_GPIO_Port, KLINE_OUT_Pin, new_state);
+    	LOG("Setting pin to %i @ %lu\n", new_state, HAL_GetTick());
+		fflush(stdout);
+
+		bits_left--;
+	}
+}
+
+void run_init(uint8_t address) {
+	data = ~address;
+	bits_left = 9;
+	HAL_ASSERT(HAL_TIM_Base_Start_IT(&htim7));
+	htim7.Instance->CNT = 0;
+	HAL_GPIO_WritePin(KLINE_OUT_GPIO_Port, KLINE_OUT_Pin, GPIO_PIN_RESET);
+	LOG("Setting pin to 0 @ %lu\n", HAL_GetTick());
+	LOG("Starting initialization.\n");
+	LOG("Tick: %lu\n", HAL_GetTick());
 	fflush(stdout);
+}
+
+static void kline_5baud_gpio_init(void) {
+	GPIO_InitTypeDef GPIO_InitStruct = {0};
+    GPIO_InitStruct.Pin = KLINE_OUT_Pin;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    HAL_GPIO_Init(KLINE_OUT_GPIO_Port, &GPIO_InitStruct);
+	HAL_GPIO_WritePin(KLINE_OUT_GPIO_Port, KLINE_OUT_Pin, GPIO_PIN_SET);
+	LOG("Setting pin to 1 @ %lu\n", HAL_GetTick());
+}
+
+static void kline_5baud_gpio_deinit(void) {
+	GPIO_InitTypeDef GPIO_InitStruct = {0};
+    GPIO_InitStruct.Pin = KLINE_OUT_Pin;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF8_UART4;
+    HAL_GPIO_Init(KLINE_OUT_GPIO_Port, &GPIO_InitStruct);
+}
+
+uint8_t uart_data_buffer[256];
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
+	printf("Transmit complete!\n");
+	fflush(stdout);
+}
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+	printf("Receive complete!\n");
+	for(int i = 0; i < 3; i++) {
+		printf("Byte: %x\n", uart_data_buffer[i]);
+	}
+	fflush(stdout);
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
+	printf("UART error!\n");
+	fflush(stdout);
+}
+
+volatile uint8_t kw2_state;
+volatile uint8_t not_kw2;
+void handle_new_byte(uint8_t byte) {
+	printf("New byte %x\n", byte);
+	fflush(stdout);
+	switch(kw2_state) {
+	case 0:
+		if(byte == 0x55) {
+			kw2_state = 1;
+		}
+		break;
+	case 1:
+		kw2_state = 2;
+		break;
+	case 2:
+		kw2_state = 3;
+		not_kw2 = ~byte;
+		break;
+	default:
+		LOG("WARN: received %x\n", byte);
+	}
 }
 /* USER CODE END PFP */
 
@@ -101,24 +210,87 @@ int main(void)
   MX_USART3_UART_Init();
   MX_USB_OTG_FS_PCD_Init();
   MX_TIM7_Init();
+  MX_UART4_Init();
   /* USER CODE BEGIN 2 */
-  HAL_StatusTypeDef status;
-  // 200ms interval timer
-  status = HAL_TIM_Base_Start_IT(&htim7);
-  if(status != HAL_OK) {
-	  printf("Timer init failed: %u\n", status);
+
+  printf("\n----- PROGRAM BEGIN -----\n");
+  fflush(stdout);
+
+  /*for(int i = 0; i < 0x10; i++) uart_data_buffer[i] = 0xa + i;
+  if(HAL_UART_Receive_IT(&huart4, uart_data_buffer, sizeof(uart_data_buffer)) != HAL_OK) {
+	  printf("Failed receive...\n");
+	  fflush(stdout);
+	  Error_Handler();
+  }
+  HAL_Delay(100);
+  uint8_t test_data[] = {0x15, 0x14, 0x44, 0x14, 0x69};
+  if(HAL_UART_Transmit_IT(&huart4, test_data, 5) != HAL_OK) {
+	  printf("Failed transmit...\n");
 	  fflush(stdout);
 	  Error_Handler();
   }
 
-  printf("\n----- PROGRAM BEGIN -----\n");
-  fflush(stdout);
+  HAL_Delay(2000);
+  uint16_t received = huart4.RxXferSize - huart4.RxXferCount;
+  if(HAL_UART_AbortReceive(&huart4) != HAL_OK) {
+	  printf("Failed exiting...\n");
+	  fflush(stdout);
+	  Error_Handler();
+  }
+
+  printf("Received a total of %u bytes\n", received);
+  for(int i = 0; i < received; i++) {
+	  printf("Byte #%u: 0x%x\n", i+1, uart_data_buffer[i]);
+  }*/
+
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	kline_5baud_gpio_init();
+	HAL_Delay(4000);
+	unsigned int addr = -1;
+	do {
+		printf("Waiting for address: "); fflush(stdout);
+		scanf("%x", &addr);
+	} while(addr > 0xff);
+
+	printf("Sending %x...\n", addr);
+	kw2_state = 0;
+	run_init(addr);
+	while(kw2_state != 3)
+		;
+
+	HAL_Delay(30);
+
+	uint8_t data = not_kw2;
+	HAL_ASSERT(HAL_UART_Transmit(&huart4, &data, 1, 1000));
+	printf("Sending %x\n", not_kw2);
+
+	while(1)
+		;
+
+	/*
+	uint8_t rx[16] = {0};
+	HAL_UART_Receive(&huart4, rx, sizeof(rx), 6000);
+	for(int i = 0; i < sizeof(rx); i++) {
+		printf("%x ", rx[i]);
+	}
+	printf("\n");
+	fflush(stdout);
+
+	int i;
+	for(i = 0; i < sizeof(rx); i++) if(rx[i] == 0x55) break;
+	if(rx[i] != 0x55) {
+		printf("Not 55\n");
+		fflush(stdout);
+		continue;
+	}
+	*/
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -207,6 +379,39 @@ static void MX_TIM7_Init(void)
   /* USER CODE BEGIN TIM7_Init 2 */
 
   /* USER CODE END TIM7_Init 2 */
+
+}
+
+/**
+  * @brief UART4 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_UART4_Init(void)
+{
+
+  /* USER CODE BEGIN UART4_Init 0 */
+
+  /* USER CODE END UART4_Init 0 */
+
+  /* USER CODE BEGIN UART4_Init 1 */
+
+  /* USER CODE END UART4_Init 1 */
+  huart4.Instance = UART4;
+  huart4.Init.BaudRate = 10400;
+  huart4.Init.WordLength = UART_WORDLENGTH_8B;
+  huart4.Init.StopBits = UART_STOPBITS_1;
+  huart4.Init.Parity = UART_PARITY_NONE;
+  huart4.Init.Mode = UART_MODE_TX_RX;
+  huart4.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart4.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN UART4_Init 2 */
+
+  /* USER CODE END UART4_Init 2 */
 
 }
 
@@ -355,6 +560,7 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
+  fflush(stdout);
   __disable_irq();
   HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);

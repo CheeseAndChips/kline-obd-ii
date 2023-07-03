@@ -47,6 +47,10 @@ extern "C" {
 
 /* Exported macro ------------------------------------------------------------*/
 /* USER CODE BEGIN EM */
+#define XSTR(a) #a
+#define STR(a) XSTR(a)
+#define LOG(f_, ...) printf(__FILE__ ":" STR(__LINE__) " " f_, ##__VA_ARGS__)
+#define HAL_ASSERT(f) { HAL_StatusTypeDef status = (f); if(status != HAL_OK) { LOG("HAL_ASSERT failed (0x%x)\n", status); Error_Handler(); } }
 
 /* USER CODE END EM */
 
@@ -88,6 +92,10 @@ void Error_Handler(void);
 #define TMS_GPIO_Port GPIOA
 #define TCK_Pin GPIO_PIN_14
 #define TCK_GPIO_Port GPIOA
+#define KLINE_OUT_Pin GPIO_PIN_10
+#define KLINE_OUT_GPIO_Port GPIOC
+#define KLINE_IN_Pin GPIO_PIN_11
+#define KLINE_IN_GPIO_Port GPIOC
 #define LD2_Pin GPIO_PIN_7
 #define LD2_GPIO_Port GPIOB
 

@@ -56,7 +56,9 @@
 
 /* External variables --------------------------------------------------------*/
 extern TIM_HandleTypeDef htim7;
+extern UART_HandleTypeDef huart4;
 /* USER CODE BEGIN EV */
+extern void handle_new_byte(uint8_t);
 
 /* USER CODE END EV */
 
@@ -197,6 +199,25 @@ void SysTick_Handler(void)
 /* For the available peripheral interrupt handler names,                      */
 /* please refer to the startup file (startup_stm32f4xx.s).                    */
 /******************************************************************************/
+
+/**
+  * @brief This function handles UART4 global interrupt.
+  */
+void UART4_IRQHandler(void)
+{
+  /* USER CODE BEGIN UART4_IRQn 0 */
+  if(__HAL_UART_GET_FLAG(&huart4, UART_FLAG_RXNE)) {
+	  uint8_t new_byte = UART4->DR;
+	  handle_new_byte(new_byte);
+  } else { printf("Bad interrupt call\n"); fflush(stdout); }
+  return;
+
+  /* USER CODE END UART4_IRQn 0 */
+  HAL_UART_IRQHandler(&huart4);
+  /* USER CODE BEGIN UART4_IRQn 1 */
+
+  /* USER CODE END UART4_IRQn 1 */
+}
 
 /**
   * @brief This function handles TIM7 global interrupt.
