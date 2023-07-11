@@ -18,10 +18,12 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "usb_host.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "lcd.h"
+#include "usbh_hid.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -45,8 +47,6 @@ TIM_HandleTypeDef htim7;
 UART_HandleTypeDef huart4;
 UART_HandleTypeDef huart3;
 
-PCD_HandleTypeDef hpcd_USB_OTG_FS;
-
 /* USER CODE BEGIN PV */
 
 /* USER CODE END PV */
@@ -55,9 +55,10 @@ PCD_HandleTypeDef hpcd_USB_OTG_FS;
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART3_UART_Init(void);
-static void MX_USB_OTG_FS_PCD_Init(void);
 static void MX_TIM7_Init(void);
 static void MX_UART4_Init(void);
+void MX_USB_HOST_Process(void);
+
 /* USER CODE BEGIN PFP */
 
 static void run_init(uint8_t address);
@@ -167,6 +168,63 @@ void handle_new_byte(uint8_t byte) {
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 char stdinbuffer[256];
+extern ApplicationTypeDef Appli_state;
+//extern USBH_HandleTypeDef hUsbHostFS;
+
+uint8_t buttons_held[256 / 8];
+
+void USBH_HID_EventCallback(USBH_HandleTypeDef *phost) {
+	HID_KEYBD_Info_TypeDef *k_pinfo = USBH_HID_GetKeybdInfo(phost);
+	if(k_pinfo != NULL) {
+		/*
+		uint8_t key = 0;
+		for(uint8_t i = sizeof(k_pinfo->keys); i > 0; i--) {
+			char c = k_pinfo->keys[i-1];
+			if(c != 0) {
+				key = c;
+				break;
+			}
+		}
+
+		if(key >= KEY_A && key <= KEY_Z) {
+			int8_t offset = ((k_pinfo->lshift || k_pinfo->rshift) ? 'A' : 'a') - KEY_A;
+		}
+		*/
+		char new_button = 0;
+		for(uint8_t i = 0; i < sizeof(k_pinfo->keys); i++) {
+			char c = k_pinfo->keys[i];
+			if(c) {
+				uint8_t ind = c / 8;
+				uint8_t shift = c % 8;
+				if((buttons_held[ind] >> shift) == 0) {
+					assert(!new_button);
+					new_button = c;
+				}
+			}
+		}
+
+		memset(buttons_held, 0, sizeof(buttons_held));
+
+		for(uint8_t i = 0; i < sizeof(k_pinfo->keys); i++) {
+			char c = k_pinfo->keys[i];
+			if(c) {
+				uint8_t ind = c / 8;
+				uint8_t shift = c % 8;
+				buttons_held[ind] |= (1 << shift);
+			}
+		}
+
+		if(new_button == KEY_ENTER || new_button == KEY_KEYPAD_ENTER) {
+			putc('\n', stdout);
+		}
+
+		if(new_button >= KEY_A && new_button <= KEY_Z) {
+			int8_t offset = ((k_pinfo->lshift || k_pinfo->rshift) ? 'A' : 'a') - KEY_A;
+			putc(new_button + offset, stdout);
+			fflush(stdout);
+		}
+	}
+}
 /* USER CODE END 0 */
 
 /**
@@ -199,16 +257,20 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART3_UART_Init();
-  MX_USB_OTG_FS_PCD_Init();
   MX_TIM7_Init();
   MX_UART4_Init();
+  MX_USB_HOST_Init();
   /* USER CODE BEGIN 2 */
 
   printf("\n----- PROGRAM BEGIN -----\n");
   fflush(stdout);
 
+  /* usb init */
+
+  /* usb init end */
+
   lcd_init();
-  Error_Handler();
+  /*Error_Handler();
   kline_5baud_gpio_init();
   HAL_Delay(4000);
   kw2_state = 0;
@@ -234,7 +296,7 @@ int main(void)
   for(int i = 0; i < sizeof(first_request); i++) {
 	  HAL_ASSERT(HAL_UART_Transmit(&huart4, first_request + i, 1, 1000));
 	  HAL_Delay(6);
-  }
+  }*/
 
   /* USER CODE END 2 */
 
@@ -244,8 +306,13 @@ int main(void)
   {
 	// ...
     /* USER CODE END WHILE */
+    MX_USB_HOST_Process();
 
     /* USER CODE BEGIN 3 */
+
+    if(Appli_state == APPLICATION_READY) {
+
+    }
   }
   /* USER CODE END 3 */
 }
@@ -397,41 +464,6 @@ static void MX_USART3_UART_Init(void)
   /* USER CODE BEGIN USART3_Init 2 */
 
   /* USER CODE END USART3_Init 2 */
-
-}
-
-/**
-  * @brief USB_OTG_FS Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USB_OTG_FS_PCD_Init(void)
-{
-
-  /* USER CODE BEGIN USB_OTG_FS_Init 0 */
-
-  /* USER CODE END USB_OTG_FS_Init 0 */
-
-  /* USER CODE BEGIN USB_OTG_FS_Init 1 */
-
-  /* USER CODE END USB_OTG_FS_Init 1 */
-  hpcd_USB_OTG_FS.Instance = USB_OTG_FS;
-  hpcd_USB_OTG_FS.Init.dev_endpoints = 6;
-  hpcd_USB_OTG_FS.Init.speed = PCD_SPEED_FULL;
-  hpcd_USB_OTG_FS.Init.dma_enable = DISABLE;
-  hpcd_USB_OTG_FS.Init.phy_itface = PCD_PHY_EMBEDDED;
-  hpcd_USB_OTG_FS.Init.Sof_enable = ENABLE;
-  hpcd_USB_OTG_FS.Init.low_power_enable = DISABLE;
-  hpcd_USB_OTG_FS.Init.lpm_enable = DISABLE;
-  hpcd_USB_OTG_FS.Init.vbus_sensing_enable = ENABLE;
-  hpcd_USB_OTG_FS.Init.use_dedicated_ep1 = DISABLE;
-  if (HAL_PCD_Init(&hpcd_USB_OTG_FS) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USB_OTG_FS_Init 2 */
-
-  /* USER CODE END USB_OTG_FS_Init 2 */
 
 }
 
