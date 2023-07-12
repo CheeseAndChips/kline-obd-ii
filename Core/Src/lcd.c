@@ -6,6 +6,9 @@
 #define FONT_H 8
 #define FONT_W 5
 
+#define DISPLAY_H 240
+#define DISPLAY_W 320
+
 // size of a single character in bytes
 static const int CHAR_SIZE = (FONT_H * FONT_W) / 8 + (((FONT_H * FONT_W) % 8) != 0);
 
@@ -25,6 +28,12 @@ const char *get_char_data(uint8_t c) {
 }
 
 /* FONT END */
+
+void lcd_text_update_cursor(void);
+
+static struct {
+	uint8_t row, col;
+} cursor_pos;
 
 #define GET_GPIO_PORT(pin) (pin ## _GPIO_Port)
 #define GET_GPIO_PIN_NUM(pin) (pin ## _Pin)
@@ -134,29 +143,61 @@ void lcd_init(void) {
 		lcd_data_write(0x0);
 	}
 
-	lcd_set_address(10, 9 + FONT_H, 0, 320);
-	lcd_command_write(0x2c); // write memory
-	for(int curr_ch = '0'; curr_ch < 'z'; curr_ch++){
-		if(curr_ch == '0' + 40) {
-			lcd_set_address(20, 19 + FONT_H, 0, 320);
-			lcd_command_write(0x2c);
-		}
+	lcd_text_update_cursor();
+}
 
-		const char *ch = get_char_data(curr_ch - ' ');
-		int8_t shift = 7;
-		for(int i = 0; i < FONT_W * FONT_H; i++) {
-			if(*ch & (1 << shift)) {
-				lcd_data_write(0xff);
-				lcd_data_write(0xff);
-			} else {
-				lcd_data_write(0x00);
-				lcd_data_write(0x00);
-			}
-			if(--shift < 0) {
-				shift = 7;
-				ch++;
-			}
+void lcd_text_write_symbol_raw(uint8_t c) {
+	const char *ch = get_char_data(c);
+	int8_t shift = 7;
+	for(int i = 0; i < FONT_W * FONT_H; i++) {
+		if(*ch & (1 << shift)) {
+			lcd_data_write(0xff);
+			lcd_data_write(0xff);
+		} else {
+			lcd_data_write(0x00);
+			lcd_data_write(0x00);
+		}
+		if(--shift < 0) {
+			shift = 7;
+			ch++;
 		}
 	}
-	SET_H(LCD_CS);
+}
+
+void lcd_text_update_cursor(void) {
+	lcd_set_address(1 + cursor_pos.row * FONT_H, (1 + cursor_pos.row) * FONT_H, cursor_pos.col * FONT_W, DISPLAY_W);
+	lcd_command_write(0x2c);
+}
+
+void lcd_text_newline(void) {
+	cursor_pos.row++;
+	cursor_pos.col = 0;
+	lcd_text_update_cursor();
+}
+
+void lcd_text_backspace(void) {
+	if(cursor_pos.col) {
+		cursor_pos.col--;
+		lcd_text_update_cursor();
+		lcd_text_write_symbol_raw(0);
+		lcd_text_update_cursor();
+	}
+}
+
+void lcd_text_write_symbol(char c) {
+	printf("Writing %x\n", c);
+	if(c == '\b') {
+		lcd_text_backspace();
+	} else if(c == '\n') {
+		lcd_text_newline();
+	} else {
+		lcd_text_write_symbol_raw(c - ' ');
+		cursor_pos.col++;
+	}
+}
+
+void lcd_text_write_string(const char *str) {
+	while(*str) {
+		lcd_text_write_symbol(*str++);
+	}
 }

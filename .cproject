@@ -53,6 +53,7 @@
 									<listOptionValue builtIn="false" value="../Middlewares/ST/STM32_USB_Host_Library/Core/Inc"/>
 									<listOptionValue builtIn="false" value="../Middlewares/ST/STM32_USB_Host_Library/Class/HID/Inc"/>
 								</option>
+								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.cyclomaticcomplexity.2046401997" name="Cyclomatic Complexity (-fcyclomatic-complexity)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.cyclomaticcomplexity" useByScannerDiscovery="false" value="false" valueType="boolean"/>
 								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.1013964950" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c"/>
 							</tool>
 							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.348975112" name="MCU G++ Compiler" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler">

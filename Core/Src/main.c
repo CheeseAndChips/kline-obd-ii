@@ -24,6 +24,9 @@
 /* USER CODE BEGIN Includes */
 #include "lcd.h"
 #include "usbh_hid.h"
+#include "usbh_hid_keybd.h"
+#include "hid_keys.h"
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -190,14 +193,13 @@ void USBH_HID_EventCallback(USBH_HandleTypeDef *phost) {
 			int8_t offset = ((k_pinfo->lshift || k_pinfo->rshift) ? 'A' : 'a') - KEY_A;
 		}
 		*/
-		char new_button = 0;
+		uint8_t new_button = 0;
 		for(uint8_t i = 0; i < sizeof(k_pinfo->keys); i++) {
 			char c = k_pinfo->keys[i];
 			if(c) {
 				uint8_t ind = c / 8;
 				uint8_t shift = c % 8;
 				if((buttons_held[ind] >> shift) == 0) {
-					assert(!new_button);
 					new_button = c;
 				}
 			}
@@ -206,7 +208,7 @@ void USBH_HID_EventCallback(USBH_HandleTypeDef *phost) {
 		memset(buttons_held, 0, sizeof(buttons_held));
 
 		for(uint8_t i = 0; i < sizeof(k_pinfo->keys); i++) {
-			char c = k_pinfo->keys[i];
+			uint8_t c = k_pinfo->keys[i];
 			if(c) {
 				uint8_t ind = c / 8;
 				uint8_t shift = c % 8;
@@ -214,14 +216,15 @@ void USBH_HID_EventCallback(USBH_HandleTypeDef *phost) {
 			}
 		}
 
-		if(new_button == KEY_ENTER || new_button == KEY_KEYPAD_ENTER) {
-			putc('\n', stdout);
-		}
-
-		if(new_button >= KEY_A && new_button <= KEY_Z) {
-			int8_t offset = ((k_pinfo->lshift || k_pinfo->rshift) ? 'A' : 'a') - KEY_A;
-			putc(new_button + offset, stdout);
-			fflush(stdout);
+		if(new_button) {
+			uint8_t result;
+			if(k_pinfo->lshift || k_pinfo->rshift) {
+				result = HID_KEYBRD_ShiftKey[HID_KEYBRD_Codes[new_button]];
+			} else {
+				result = HID_KEYBRD_Key[HID_KEYBRD_Codes[new_button]];
+			}
+			if(result)
+				lcd_text_write_symbol(result);
 		}
 	}
 }
