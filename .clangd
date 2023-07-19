@@ -1,0 +1,3 @@
+CompileFlags:
+  Add: ["-isystem", "/usr/include"]
+  Compiler: "/opt/stm32cubeide/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.10.3-2021.10.linux64_1.0.200.202301161003/tools/bin/arm-none-eabi-gcc"

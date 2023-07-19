@@ -1,5 +1,6 @@
 #include "lcd.h"
 #include "main.h"
+#include <stdarg.h>
 
 /* FONT BEGIN */
 
@@ -8,6 +9,9 @@
 
 #define DISPLAY_H 240
 #define DISPLAY_W 320
+
+#define LINE_LENGTH (DISPLAY_W / FONT_W)
+#define LINE_COUNT (DISPLAY_H / FONT_H)
 
 // size of a single character in bytes
 static const int CHAR_SIZE = (FONT_H * FONT_W) / 8 + (((FONT_H * FONT_W) % 8) != 0);
@@ -31,9 +35,7 @@ const char *get_char_data(uint8_t c) {
 
 void lcd_text_update_cursor(void);
 
-static struct {
-	uint8_t row, col;
-} cursor_pos;
+cursor_pos_t cursor_pos;
 
 #define GET_GPIO_PORT(pin) (pin ## _GPIO_Port)
 #define GET_GPIO_PIN_NUM(pin) (pin ## _Pin)
@@ -138,11 +140,20 @@ void lcd_init(void) {
 	HAL_Delay(10);
 	lcd_command_write(0x29); // display on
 
-	lcd_command_write(0x2c); // write memory
-	for(int i = 0; i < 2*240*320; i++) {
+	lcd_clear();
+	
+	lcd_text_update_cursor();
+}
+
+void lcd_clear(void) {
+	lcd_set_address(0, DISPLAY_H, 0, DISPLAY_W);
+	lcd_command_write(0x2c);
+	for(int i = 0; i < 2*DISPLAY_H*DISPLAY_W; i++) {
 		lcd_data_write(0x0);
 	}
 
+	cursor_pos.row = 0;
+	cursor_pos.col = 0;
 	lcd_text_update_cursor();
 }
 
@@ -184,20 +195,30 @@ void lcd_text_backspace(void) {
 	}
 }
 
-void lcd_text_write_symbol(char c) {
-	printf("Writing %x\n", c);
+void lcd_text_putc(char c) {
 	if(c == '\b') {
 		lcd_text_backspace();
 	} else if(c == '\n') {
 		lcd_text_newline();
 	} else {
-		lcd_text_write_symbol_raw(c - ' ');
-		cursor_pos.col++;
+		if(cursor_pos.col < LINE_LENGTH) {
+			lcd_text_write_symbol_raw(c - ' ');
+			cursor_pos.col++;
+		}
 	}
 }
 
-void lcd_text_write_string(const char *str) {
+void lcd_text_puts(const char *str) {
 	while(*str) {
-		lcd_text_write_symbol(*str++);
+		lcd_text_putc(*str++);
 	}
+}
+
+void lcd_text_printf(const char *format, ...) {
+	va_list args;
+	va_start(args, format);
+	char buf[LINE_LENGTH + 1];
+	vsnprintf(buf, LINE_LENGTH + 1, format, args);
+	lcd_text_puts(buf);
+	va_end(args);
 }

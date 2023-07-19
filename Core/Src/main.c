@@ -64,7 +64,7 @@ void MX_USB_HOST_Process(void);
 
 /* USER CODE BEGIN PFP */
 
-static void run_init(uint8_t address);
+static void kline_run_init(uint8_t address);
 static void kline_5baud_gpio_init(void);
 static void kline_5baud_gpio_deinit(void);
 
@@ -84,8 +84,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
     	HAL_GPIO_WritePin(KLINE_OUT_GPIO_Port, KLINE_OUT_Pin, GPIO_PIN_SET);
 		kline_5baud_gpio_deinit();
 		HAL_ASSERT(HAL_TIM_Base_Stop_IT(&htim7));
-		printf("Initialization done.\n");
-		fflush(stdout);
+		lcd_text_puts("\nDone sending init\n");
 
 		// start listening
 		__HAL_UART_ENABLE_IT(&huart4, UART_IT_RXNE);
@@ -93,11 +92,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 		GPIO_PinState new_state = (kline_init_data & 0x80) ? GPIO_PIN_SET : GPIO_PIN_RESET;
 		kline_init_data <<= 1;
 		HAL_GPIO_WritePin(KLINE_OUT_GPIO_Port, KLINE_OUT_Pin, new_state);
+		lcd_text_putc(new_state ? '1' : '0');
 		kline_init_bits_left--;
 	}
 }
 
-void run_init(uint8_t address) {
+void kline_run_init(uint8_t address) {
 	kline_init_data = ~address;
 	kline_init_bits_left = 9;
 	HAL_ASSERT(HAL_TIM_Base_Start_IT(&htim7));
@@ -133,10 +133,13 @@ enum kline_uart_read_state {
 	INIT_DONE,
 };
 
-volatile enum kline_uart_read_state kw2_state = WAITING_FOR_SYNC;
+volatile enum kline_uart_read_state kw2_state;
 volatile uint8_t not_kw2;	// inverse of the KeyWord2, supplied by the car during initialization
+
+volatile uint8_t cnt_received = 0;
+volatile uint8_t bytes_received[64];
 void handle_new_byte(uint8_t byte) {
-	printf("Received byte %x at state %u\n", byte, kw2_state);
+	// printf("Received byte %x at state %u\n", byte, kw2_state);
 
 	const uint8_t KLINE_INIT_ADDRESS_INVERTED = (~(KLINE_INIT_ADDRESS)) & 0xff;
 	switch(kw2_state) {
@@ -160,6 +163,7 @@ void handle_new_byte(uint8_t byte) {
 		}
 		break;
 	case INIT_DONE:
+		bytes_received[cnt_received++] = byte;
 		LOG("WARN: Received %x\n", byte);
 		break;
 	}
@@ -172,27 +176,37 @@ void handle_new_byte(uint8_t byte) {
 /* USER CODE BEGIN 0 */
 char stdinbuffer[256];
 extern ApplicationTypeDef Appli_state;
+extern cursor_pos_t cursor_pos;
+void update_lcd_command(uint8_t);
 //extern USBH_HandleTypeDef hUsbHostFS;
 
 uint8_t buttons_held[256 / 8];
+enum main_loop_status {
+	MAIN_LOOP_WAITING_FOR_ENTER,
+	MAIN_LOOP_RUNNING_INIT,
+	MAIN_LOOP_COMMANDS,
+	MAIN_LOOP_COMMAND_WAITING_FOR_RESPONSE,
+};
+volatile enum main_loop_status main_status;
+volatile uint8_t expecting_chars = 0;
+volatile uint8_t new_command = 0;
+volatile uint8_t current_command = 0x00;
+
+void update_single_char(char c, uint8_t offset) {
+	cursor_pos_t cpos_bak = cursor_pos;
+	cursor_pos.row = 0;
+	cursor_pos.col = 50 + offset;
+
+	lcd_text_update_cursor();
+	lcd_text_putc(c);
+
+	cursor_pos = cpos_bak;
+	lcd_text_update_cursor();
+}
 
 void USBH_HID_EventCallback(USBH_HandleTypeDef *phost) {
 	HID_KEYBD_Info_TypeDef *k_pinfo = USBH_HID_GetKeybdInfo(phost);
 	if(k_pinfo != NULL) {
-		/*
-		uint8_t key = 0;
-		for(uint8_t i = sizeof(k_pinfo->keys); i > 0; i--) {
-			char c = k_pinfo->keys[i-1];
-			if(c != 0) {
-				key = c;
-				break;
-			}
-		}
-
-		if(key >= KEY_A && key <= KEY_Z) {
-			int8_t offset = ((k_pinfo->lshift || k_pinfo->rshift) ? 'A' : 'a') - KEY_A;
-		}
-		*/
 		uint8_t new_button = 0;
 		for(uint8_t i = 0; i < sizeof(k_pinfo->keys); i++) {
 			char c = k_pinfo->keys[i];
@@ -217,6 +231,35 @@ void USBH_HID_EventCallback(USBH_HandleTypeDef *phost) {
 		}
 
 		if(new_button) {
+			if(new_button == KEY_ENTER && main_status == MAIN_LOOP_WAITING_FOR_ENTER) {
+				main_status = MAIN_LOOP_RUNNING_INIT;
+			} else if(new_button == KEY_SPACEBAR && expecting_chars == 0) {
+				update_single_char('U', 0);
+				expecting_chars = 2;
+			} else if(expecting_chars) {
+				char ascii_pressed = HID_KEYBRD_Key[HID_KEYBRD_Codes[new_button]];
+				if(ascii_pressed >= '0' && ascii_pressed <= '9') {
+					expecting_chars--;
+					new_command = (new_command << 4) | (ascii_pressed - '0');
+					update_single_char(ascii_pressed, 1);
+				} else if (ascii_pressed >= 'a' && ascii_pressed <= 'f') {
+					expecting_chars--;
+					new_command = (new_command << 4) | (ascii_pressed - 'a' + 10);
+					update_single_char(ascii_pressed, 1);
+				} else if (ascii_pressed >= 'A' && ascii_pressed <= 'F') {
+					expecting_chars--;
+					new_command = (new_command << 4) | (ascii_pressed - 'A' + 10);
+					update_single_char(ascii_pressed, 1);
+				}
+
+				if(!expecting_chars) {
+					main_status = MAIN_LOOP_COMMANDS;
+					current_command = new_command;
+					update_lcd_command(new_command);
+				}
+			}
+
+			/*
 			uint8_t result;
 			if(k_pinfo->lshift || k_pinfo->rshift) {
 				result = HID_KEYBRD_ShiftKey[HID_KEYBRD_Codes[new_button]];
@@ -224,10 +267,44 @@ void USBH_HID_EventCallback(USBH_HandleTypeDef *phost) {
 				result = HID_KEYBRD_Key[HID_KEYBRD_Codes[new_button]];
 			}
 			if(result)
-				lcd_text_write_symbol(result);
+				lcd_text_putc(result);
+			*/
 		}
 	}
 }
+
+uint8_t kline_command[64];
+uint8_t kline_command_len;
+void update_lcd_command(uint8_t pid) {
+	lcd_clear();
+	cursor_pos.row = 0;
+	cursor_pos.col = 0;
+	lcd_text_update_cursor();
+
+	kline_command_len = 6;
+	kline_command[0] = 0x68;
+	kline_command[1] = 0x6a;
+	kline_command[2] = 0xf1;
+	kline_command[3] = 0x01;
+	kline_command[4] = pid;
+
+	uint8_t checksum = 0;
+	for(int i = 0; i < kline_command_len - 1; i++) {
+		checksum += kline_command[i];
+	}
+
+	kline_command[5] = checksum;
+
+	lcd_text_puts("Kline command: ");
+	printf("Kline command: ");
+	for(int i = 0; i < kline_command_len; i++) {
+		lcd_text_printf("0x%02x ", kline_command[i]);
+		printf("0x%02x ", kline_command[i]);
+	}
+	lcd_text_putc('\n');
+	printf("\n");
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -268,43 +345,15 @@ int main(void)
   printf("\n----- PROGRAM BEGIN -----\n");
   fflush(stdout);
 
-  /* usb init */
-
-  /* usb init end */
-
+  main_status = MAIN_LOOP_WAITING_FOR_ENTER;
   lcd_init();
-  /*Error_Handler();
-  kline_5baud_gpio_init();
-  HAL_Delay(4000);
-  kw2_state = 0;
-  printf("Running init with address " STR(KLINE_INIT_ADDRESS) "\n");
-  fflush(stdout);
-  run_init(KLINE_INIT_ADDRESS);
-  while(kw2_state != WAITING_FOR_NOT_ADDR)
-    ;
-
-  HAL_Delay(30);
-
-  uint8_t data = not_kw2;
-  HAL_ASSERT(HAL_UART_Transmit(&huart4, &data, 1, 1000));
-  printf("Sent %x\n", data);
-
-  while(kw2_state != INIT_DONE)
-	  ;
-
-  HAL_Delay(100);
-  printf("Sending first request...\n");
-
-  uint8_t first_request[] = {0x68, 0x6a, 0xf1, 0x01, 0x00, 0xc4};
-  for(int i = 0; i < sizeof(first_request); i++) {
-	  HAL_ASSERT(HAL_UART_Transmit(&huart4, first_request + i, 1, 1000));
-	  HAL_Delay(6);
-  }*/
+  lcd_text_puts("Waiting for ENTER\n");
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+	uint32_t last_command = 0;
   while (1)
   {
 	// ...
@@ -313,10 +362,70 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-    if(Appli_state == APPLICATION_READY) {
+	switch(main_status) {
+		case MAIN_LOOP_WAITING_FOR_ENTER:
+			break;
+		case MAIN_LOOP_RUNNING_INIT:
+		  lcd_text_puts("Initializing gpio\n");
+		  kline_5baud_gpio_init();
 
-    }
-  }
+		  HAL_Delay(4000);
+		  lcd_text_puts("Sending data\n");
+		  kw2_state = WAITING_FOR_SYNC;
+		  lcd_text_puts("Running init with address " STR(KLINE_INIT_ADDRESS) "\n");
+		  kline_run_init(KLINE_INIT_ADDRESS);
+
+		  while(kw2_state != WAITING_FOR_NOT_ADDR)
+			;
+
+		  HAL_Delay(30);
+
+		  uint8_t data = not_kw2;
+		  HAL_ASSERT(HAL_UART_Transmit(&huart4, &data, 1, 1000));
+		  lcd_text_printf("Sent 0x%x\n", data);
+
+		  while(kw2_state != INIT_DONE)
+			  ;
+
+
+		  HAL_Delay(2000);
+		  lcd_text_puts("Init successful\n");
+		  HAL_Delay(2000);
+			update_lcd_command(current_command);
+		  main_status = MAIN_LOOP_COMMANDS;
+		  break;
+
+		case MAIN_LOOP_COMMANDS:
+			if(HAL_GetTick() > last_command + 1000) {
+					if(cursor_pos.row >= 16) {
+						update_lcd_command(current_command);
+					}
+				  
+				  last_command = HAL_GetTick();
+				  lcd_text_puts("Response: ");
+				  for(int i = 0; i < kline_command_len; i++) {
+					  HAL_ASSERT(HAL_UART_Transmit(&huart4, kline_command + i, 1, 1000));
+					  HAL_Delay(6);
+				  }
+				cnt_received = 0;
+				main_status = MAIN_LOOP_COMMAND_WAITING_FOR_RESPONSE;
+			}
+			break;
+
+		case MAIN_LOOP_COMMAND_WAITING_FOR_RESPONSE:
+			if(HAL_GetTick() > last_command + 500) {
+				lcd_text_printf("[%u] ", cnt_received);
+				printf("[%u] ", cnt_received);
+				for(uint8_t i = 0; i < cnt_received; i++) {
+					lcd_text_printf("0x%02x ", bytes_received[i]);
+					printf("0x%02x ", bytes_received[i]);
+				}
+				lcd_text_putc('\n');
+				printf("\n");
+				main_status = MAIN_LOOP_COMMANDS;
+			}
+		}
+	}
   /* USER CODE END 3 */
 }
 
