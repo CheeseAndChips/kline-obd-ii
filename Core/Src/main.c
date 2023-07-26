@@ -164,10 +164,10 @@ void handle_new_byte(uint8_t byte) {
 		break;
 	case INIT_DONE:
 		bytes_received[cnt_received++] = byte;
-		LOG("WARN: Received %x\n", byte);
+		//LOG("WARN: Received %x\n", byte);
 		break;
 	}
-	printf("new state %u\n", kw2_state);
+	//printf("new state %u\n", kw2_state);
 	fflush(stdout);
 }
 /* USER CODE END PFP */
@@ -186,6 +186,10 @@ enum main_loop_status {
 	MAIN_LOOP_RUNNING_INIT,
 	MAIN_LOOP_COMMANDS,
 	MAIN_LOOP_COMMAND_WAITING_FOR_RESPONSE,
+	MAIN_LOOP_READ_SPEED,
+	MAIN_LOOP_READ_RPM,
+	MAIN_LOOP_SEND_SPEED,
+	MAIN_LOOP_SEND_RPM,
 };
 volatile enum main_loop_status main_status;
 volatile uint8_t expecting_chars = 0;
@@ -275,12 +279,8 @@ void USBH_HID_EventCallback(USBH_HandleTypeDef *phost) {
 
 uint8_t kline_command[64];
 uint8_t kline_command_len;
-void update_lcd_command(uint8_t pid) {
-	lcd_clear();
-	cursor_pos.row = 0;
-	cursor_pos.col = 0;
-	lcd_text_update_cursor();
 
+void kline_update_command(uint8_t pid) {
 	kline_command_len = 6;
 	kline_command[0] = 0x68;
 	kline_command[1] = 0x6a;
@@ -294,6 +294,15 @@ void update_lcd_command(uint8_t pid) {
 	}
 
 	kline_command[5] = checksum;
+}
+
+void update_lcd_command(uint8_t pid) {
+	lcd_clear();
+	cursor_pos.row = 0;
+	cursor_pos.col = 0;
+	lcd_text_update_cursor();
+
+	kline_update_command(pid);
 
 	lcd_text_puts("Kline command: ");
 	printf("Kline command: ");
@@ -303,6 +312,19 @@ void update_lcd_command(uint8_t pid) {
 	}
 	lcd_text_putc('\n');
 	printf("\n");
+}
+
+struct {
+	uint8_t speed;
+	uint16_t rpm;
+} vehicle_data;
+
+void update_lcd_vehicle_data() {
+	cursor_pos.row = 0;
+	cursor_pos.col = 0;
+	lcd_text_update_cursor();
+
+	lcd_text_printf("Speed: %-3d\nRPM: %-5d\n", vehicle_data.speed, vehicle_data.rpm);
 }
 
 /* USER CODE END 0 */
@@ -364,6 +386,9 @@ int main(void)
 
 	switch(main_status) {
 		case MAIN_LOOP_WAITING_FOR_ENTER:
+			if(HAL_GPIO_ReadPin(USER_Btn_GPIO_Port, USER_Btn_Pin) == GPIO_PIN_SET) {
+				main_status = MAIN_LOOP_RUNNING_INIT;
+			}
 			break;
 		case MAIN_LOOP_RUNNING_INIT:
 		  lcd_text_puts("Initializing gpio\n");
@@ -392,9 +417,60 @@ int main(void)
 		  lcd_text_puts("Init successful\n");
 		  HAL_Delay(2000);
 			update_lcd_command(current_command);
-		  main_status = MAIN_LOOP_COMMANDS;
+			lcd_clear();
+		  main_status = MAIN_LOOP_SEND_SPEED;
 		  break;
 
+		case MAIN_LOOP_SEND_SPEED:
+			if(HAL_GetTick() > last_command + 200) {
+				last_command = HAL_GetTick();
+				kline_update_command(0x0d);
+				for(int i = 0; i < kline_command_len; i++) {
+					HAL_ASSERT(HAL_UART_Transmit(&huart4, kline_command + i, 1, 1000));
+					HAL_Delay(6);
+				}
+				cnt_received = 0;
+				main_status = MAIN_LOOP_READ_SPEED;
+			}
+			break;
+		case MAIN_LOOP_SEND_RPM:
+			if(HAL_GetTick() > last_command + 200) {
+				last_command = HAL_GetTick();
+				kline_update_command(0x0c);
+				for(int i = 0; i < kline_command_len; i++) {
+					HAL_ASSERT(HAL_UART_Transmit(&huart4, kline_command + i, 1, 1000));
+					HAL_Delay(6);
+				}
+				cnt_received = 0;
+				main_status = MAIN_LOOP_READ_RPM;
+			}
+			break;
+
+		case MAIN_LOOP_READ_SPEED:
+			if(HAL_GetTick() > last_command + 200) {
+				last_command = HAL_GetTick();
+				printf("Speed: ");
+				for(uint8_t i = 0; i < cnt_received; i++) {
+					printf("0x%02x ", bytes_received[i]);
+				}
+				vehicle_data.speed = bytes_received[cnt_received - 2];
+				printf(" (decoded %d)\n", vehicle_data.speed);
+				main_status = MAIN_LOOP_SEND_RPM;
+			}
+			break;
+		case MAIN_LOOP_READ_RPM:
+			if(HAL_GetTick() > last_command + 200) {
+				last_command = HAL_GetTick();
+				printf("RPM: ");
+				for(uint8_t i = 0; i < cnt_received; i++) {
+					printf("0x%02x ", bytes_received[i]);
+				}
+				vehicle_data.rpm = (bytes_received[cnt_received - 2] | bytes_received[cnt_received - 3] << 8) / 4;
+				printf(" (decoded %d)\n", vehicle_data.rpm);
+				update_lcd_vehicle_data();
+				main_status = MAIN_LOOP_SEND_SPEED;
+			}
+			break;
 		case MAIN_LOOP_COMMANDS:
 			if(HAL_GetTick() > last_command + 1000) {
 					if(cursor_pos.row >= 16) {
