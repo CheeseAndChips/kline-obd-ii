@@ -23,6 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "lcd.h"
+#include "kline.h"
 #include "usbh_hid.h"
 #include "usbh_hid_keybd.h"
 #include "hid_keys.h"
@@ -64,116 +65,17 @@ void MX_USB_HOST_Process(void);
 
 /* USER CODE BEGIN PFP */
 
-static void kline_run_init(uint8_t address);
-static void kline_5baud_gpio_init(void);
-static void kline_5baud_gpio_deinit(void);
-
-volatile uint8_t kline_init_data;
-volatile uint8_t kline_init_bits_left = 0;
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
-	if(htim != &htim7)
-		return;
-
-	// aaargh
-	if(kline_init_bits_left == 9) {
-		kline_init_bits_left--;
-		return;
-	}
-
-	if(!kline_init_bits_left) {
-    	HAL_GPIO_WritePin(KLINE_OUT_GPIO_Port, KLINE_OUT_Pin, GPIO_PIN_SET);
-		kline_5baud_gpio_deinit();
-		HAL_ASSERT(HAL_TIM_Base_Stop_IT(&htim7));
-		lcd_text_puts("\nDone sending init\n");
-
-		// start listening
-		__HAL_UART_ENABLE_IT(&huart4, UART_IT_RXNE);
-	} else {
-		GPIO_PinState new_state = (kline_init_data & 0x80) ? GPIO_PIN_SET : GPIO_PIN_RESET;
-		kline_init_data <<= 1;
-		HAL_GPIO_WritePin(KLINE_OUT_GPIO_Port, KLINE_OUT_Pin, new_state);
-		lcd_text_putc(new_state ? '1' : '0');
-		kline_init_bits_left--;
-	}
-}
-
-void kline_run_init(uint8_t address) {
-	kline_init_data = ~address;
-	kline_init_bits_left = 9;
-	HAL_ASSERT(HAL_TIM_Base_Start_IT(&htim7));
-	htim7.Instance->CNT = 0;
-	HAL_GPIO_WritePin(KLINE_OUT_GPIO_Port, KLINE_OUT_Pin, GPIO_PIN_RESET);
-}
-
-static void kline_5baud_gpio_init(void) {
-	GPIO_InitTypeDef GPIO_InitStruct = {0};
-    GPIO_InitStruct.Pin = KLINE_OUT_Pin;
-    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-    HAL_GPIO_Init(KLINE_OUT_GPIO_Port, &GPIO_InitStruct);
-	HAL_GPIO_WritePin(KLINE_OUT_GPIO_Port, KLINE_OUT_Pin, GPIO_PIN_SET);
-}
-
-static void kline_5baud_gpio_deinit(void) {
-	GPIO_InitTypeDef GPIO_InitStruct = {0};
-    GPIO_InitStruct.Pin = KLINE_OUT_Pin;
-    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-    GPIO_InitStruct.Alternate = GPIO_AF8_UART4;
-    HAL_GPIO_Init(KLINE_OUT_GPIO_Port, &GPIO_InitStruct);
-}
-
-enum kline_uart_read_state {
-	WAITING_FOR_SYNC,
-	WAITING_FOR_KW1,
-	WAITING_FOR_KW2,
-	WAITING_FOR_NOT_ADDR,	// inverse of KLINE_INIT_ADDRESS
-	INIT_DONE,
-};
-
-volatile enum kline_uart_read_state kw2_state;
-volatile uint8_t not_kw2;	// inverse of the KeyWord2, supplied by the car during initialization
-
-volatile uint8_t cnt_received = 0;
-volatile uint8_t bytes_received[64];
-void handle_new_byte(uint8_t byte) {
-	// printf("Received byte %x at state %u\n", byte, kw2_state);
-
-	const uint8_t KLINE_INIT_ADDRESS_INVERTED = (~(KLINE_INIT_ADDRESS)) & 0xff;
-	switch(kw2_state) {
-	case WAITING_FOR_SYNC:
-		if(byte == KLINE_INIT_SYNC_BYTE) {
-			kw2_state = WAITING_FOR_KW1;
-		}
-		break;
-	case WAITING_FOR_KW1:
-		kw2_state = WAITING_FOR_KW2;
-		break;
-	case WAITING_FOR_KW2:
-		kw2_state = WAITING_FOR_NOT_ADDR;
-		not_kw2 = ~byte;
-		break;
-	case WAITING_FOR_NOT_ADDR:
-		if(byte != KLINE_INIT_ADDRESS_INVERTED) {
-			LOG("WARN: Expecting %x, found %x\n", KLINE_INIT_ADDRESS_INVERTED, byte);
-		} else {
-			kw2_state = INIT_DONE;
-		}
-		break;
-	case INIT_DONE:
-		bytes_received[cnt_received++] = byte;
-		//LOG("WARN: Received %x\n", byte);
-		break;
-	}
-	//printf("new state %u\n", kw2_state);
-	fflush(stdout);
-}
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
+	if(htim != &htim7)
+		return;
+
+	kline_tim_callback();
+}
+
 char stdinbuffer[256];
 extern ApplicationTypeDef Appli_state;
 extern cursor_pos_t cursor_pos;
@@ -181,32 +83,6 @@ void update_lcd_command(uint8_t);
 //extern USBH_HandleTypeDef hUsbHostFS;
 
 uint8_t buttons_held[256 / 8];
-enum main_loop_status {
-	MAIN_LOOP_WAITING_FOR_ENTER,
-	MAIN_LOOP_RUNNING_INIT,
-	MAIN_LOOP_COMMANDS,
-	MAIN_LOOP_COMMAND_WAITING_FOR_RESPONSE,
-	MAIN_LOOP_READ_SPEED,
-	MAIN_LOOP_READ_RPM,
-	MAIN_LOOP_SEND_SPEED,
-	MAIN_LOOP_SEND_RPM,
-};
-volatile enum main_loop_status main_status;
-volatile uint8_t expecting_chars = 0;
-volatile uint8_t new_command = 0;
-volatile uint8_t current_command = 0x00;
-
-void update_single_char(char c, uint8_t offset) {
-	cursor_pos_t cpos_bak = cursor_pos;
-	cursor_pos.row = 0;
-	cursor_pos.col = 50 + offset;
-
-	lcd_text_update_cursor();
-	lcd_text_putc(c);
-
-	cursor_pos = cpos_bak;
-	lcd_text_update_cursor();
-}
 
 void USBH_HID_EventCallback(USBH_HandleTypeDef *phost) {
 	HID_KEYBD_Info_TypeDef *k_pinfo = USBH_HID_GetKeybdInfo(phost);
@@ -235,7 +111,7 @@ void USBH_HID_EventCallback(USBH_HandleTypeDef *phost) {
 		}
 
 		if(new_button) {
-			if(new_button == KEY_ENTER && main_status == MAIN_LOOP_WAITING_FOR_ENTER) {
+			/*if(new_button == KEY_ENTER && main_status == MAIN_LOOP_WAITING_FOR_ENTER) {
 				main_status = MAIN_LOOP_RUNNING_INIT;
 			} else if(new_button == KEY_SPACEBAR && expecting_chars == 0) {
 				update_single_char('U', 0);
@@ -261,7 +137,7 @@ void USBH_HID_EventCallback(USBH_HandleTypeDef *phost) {
 					current_command = new_command;
 					update_lcd_command(new_command);
 				}
-			}
+			}*/
 
 			/*
 			uint8_t result;
@@ -277,26 +153,7 @@ void USBH_HID_EventCallback(USBH_HandleTypeDef *phost) {
 	}
 }
 
-uint8_t kline_command[64];
-uint8_t kline_command_len;
-
-void kline_update_command(uint8_t pid) {
-	kline_command_len = 6;
-	kline_command[0] = 0x68;
-	kline_command[1] = 0x6a;
-	kline_command[2] = 0xf1;
-	kline_command[3] = 0x01;
-	kline_command[4] = pid;
-
-	uint8_t checksum = 0;
-	for(int i = 0; i < kline_command_len - 1; i++) {
-		checksum += kline_command[i];
-	}
-
-	kline_command[5] = checksum;
-}
-
-void update_lcd_command(uint8_t pid) {
+/*void update_lcd_command(uint8_t pid) {
 	lcd_clear();
 	cursor_pos.row = 0;
 	cursor_pos.col = 0;
@@ -312,21 +169,31 @@ void update_lcd_command(uint8_t pid) {
 	}
 	lcd_text_putc('\n');
 	printf("\n");
-}
+}*/
 
+enum main_loop_state {
+	MAIN_LOOP_DELAY,
+	MAIN_LOOP_RUN_INIT,
+	MAIN_LOOP_WAIT_FOR_SYNC,
+	MAIN_LOOP_WAIT_FOR_KW2,
+	MAIN_LOOP_SEND_INV_KW2,
+	MAIN_LOOP_WAIT_FOR_INV_ADDR,
+	MAIN_LOOP_SEND_KEEPALIVE,
+	MAIN_LOOP_READ_COMMAND_RESULT,
+	MAIN_LOOP_SEND_REGULAR_COMMAND,
+};
+
+enum main_loop_state main_status;
 struct {
-	uint8_t speed;
-	uint16_t rpm;
-} vehicle_data;
+	uint32_t switch_timestamp;
+	enum main_loop_state new_state;
+} delay_info;
 
-void update_lcd_vehicle_data() {
-	cursor_pos.row = 0;
-	cursor_pos.col = 0;
-	lcd_text_update_cursor();
-
-	lcd_text_printf("Speed: %-3d\nRPM: %-5d\n", vehicle_data.speed, vehicle_data.rpm);
+void start_delay(uint32_t time, enum main_loop_state new_state) {
+	delay_info.switch_timestamp = HAL_GetTick() + time;
+	delay_info.new_state = new_state;
+	main_status = MAIN_LOOP_DELAY;
 }
-
 /* USER CODE END 0 */
 
 /**
@@ -367,15 +234,17 @@ int main(void)
   printf("\n----- PROGRAM BEGIN -----\n");
   fflush(stdout);
 
-  main_status = MAIN_LOOP_WAITING_FOR_ENTER;
   lcd_init();
-  lcd_text_puts("Waiting for ENTER\n");
+  kline_5baud_gpio_init();
+  kline_setup(&htim7, &huart4);
+  printf("GPIO init\n");
+  start_delay(2000, MAIN_LOOP_RUN_INIT);
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-	uint32_t last_command = 0;
+  uint8_t write_bytes = 0;
   while (1)
   {
 	// ...
@@ -383,126 +252,102 @@ int main(void)
     MX_USB_HOST_Process();
 
     /* USER CODE BEGIN 3 */
-
-	switch(main_status) {
-		case MAIN_LOOP_WAITING_FOR_ENTER:
-			if(HAL_GPIO_ReadPin(USER_Btn_GPIO_Port, USER_Btn_Pin) == GPIO_PIN_SET) {
-				main_status = MAIN_LOOP_RUNNING_INIT;
-			}
-			break;
-		case MAIN_LOOP_RUNNING_INIT:
-		  lcd_text_puts("Initializing gpio\n");
-		  kline_5baud_gpio_init();
-
-		  HAL_Delay(4000);
-		  lcd_text_puts("Sending data\n");
-		  kw2_state = WAITING_FOR_SYNC;
-		  lcd_text_puts("Running init with address " STR(KLINE_INIT_ADDRESS) "\n");
-		  kline_run_init(KLINE_INIT_ADDRESS);
-
-		  while(kw2_state != WAITING_FOR_NOT_ADDR)
-			;
-
-		  HAL_Delay(30);
-
-		  uint8_t data = not_kw2;
-		  HAL_ASSERT(HAL_UART_Transmit(&huart4, &data, 1, 1000));
-		  lcd_text_printf("Sent 0x%x\n", data);
-
-		  while(kw2_state != INIT_DONE)
-			  ;
-
-
-		  HAL_Delay(2000);
-		  lcd_text_puts("Init successful\n");
-		  HAL_Delay(2000);
-			update_lcd_command(current_command);
-			lcd_clear();
-		  main_status = MAIN_LOOP_SEND_SPEED;
-		  break;
-
-		case MAIN_LOOP_SEND_SPEED:
-			if(HAL_GetTick() > last_command + 200) {
-				last_command = HAL_GetTick();
-				kline_update_command(0x0d);
-				for(int i = 0; i < kline_command_len; i++) {
-					HAL_ASSERT(HAL_UART_Transmit(&huart4, kline_command + i, 1, 1000));
-					HAL_Delay(6);
-				}
-				cnt_received = 0;
-				main_status = MAIN_LOOP_READ_SPEED;
-			}
-			break;
-		case MAIN_LOOP_SEND_RPM:
-			if(HAL_GetTick() > last_command + 200) {
-				last_command = HAL_GetTick();
-				kline_update_command(0x0c);
-				for(int i = 0; i < kline_command_len; i++) {
-					HAL_ASSERT(HAL_UART_Transmit(&huart4, kline_command + i, 1, 1000));
-					HAL_Delay(6);
-				}
-				cnt_received = 0;
-				main_status = MAIN_LOOP_READ_RPM;
-			}
-			break;
-
-		case MAIN_LOOP_READ_SPEED:
-			if(HAL_GetTick() > last_command + 200) {
-				last_command = HAL_GetTick();
-				printf("Speed: ");
-				for(uint8_t i = 0; i < cnt_received; i++) {
-					printf("0x%02x ", bytes_received[i]);
-				}
-				vehicle_data.speed = bytes_received[cnt_received - 2];
-				printf(" (decoded %d)\n", vehicle_data.speed);
-				main_status = MAIN_LOOP_SEND_RPM;
-			}
-			break;
-		case MAIN_LOOP_READ_RPM:
-			if(HAL_GetTick() > last_command + 200) {
-				last_command = HAL_GetTick();
-				printf("RPM: ");
-				for(uint8_t i = 0; i < cnt_received; i++) {
-					printf("0x%02x ", bytes_received[i]);
-				}
-				vehicle_data.rpm = (bytes_received[cnt_received - 2] | bytes_received[cnt_received - 3] << 8) / 4;
-				printf(" (decoded %d)\n", vehicle_data.rpm);
-				update_lcd_vehicle_data();
-				main_status = MAIN_LOOP_SEND_SPEED;
-			}
-			break;
-		case MAIN_LOOP_COMMANDS:
-			if(HAL_GetTick() > last_command + 1000) {
-					if(cursor_pos.row >= 16) {
-						update_lcd_command(current_command);
-					}
-				  
-				  last_command = HAL_GetTick();
-				  lcd_text_puts("Response: ");
-				  for(int i = 0; i < kline_command_len; i++) {
-					  HAL_ASSERT(HAL_UART_Transmit(&huart4, kline_command + i, 1, 1000));
-					  HAL_Delay(6);
-				  }
-				cnt_received = 0;
-				main_status = MAIN_LOOP_COMMAND_WAITING_FOR_RESPONSE;
-			}
-			break;
-
-		case MAIN_LOOP_COMMAND_WAITING_FOR_RESPONSE:
-			if(HAL_GetTick() > last_command + 500) {
-				lcd_text_printf("[%u] ", cnt_received);
-				printf("[%u] ", cnt_received);
-				for(uint8_t i = 0; i < cnt_received; i++) {
-					lcd_text_printf("0x%02x ", bytes_received[i]);
-					printf("0x%02x ", bytes_received[i]);
-				}
-				lcd_text_putc('\n');
-				printf("\n");
-				main_status = MAIN_LOOP_COMMANDS;
-			}
+	if(HAL_GPIO_ReadPin(USER_Btn_GPIO_Port, USER_Btn_Pin) == GPIO_PIN_SET) {
+		if(main_status == MAIN_LOOP_DELAY) {
+			main_status = MAIN_LOOP_SEND_REGULAR_COMMAND;
 		}
 	}
+
+	switch(main_status) {
+	case MAIN_LOOP_DELAY:
+		if(HAL_GetTick() > delay_info.switch_timestamp) {
+			main_status = delay_info.new_state;
+		}
+		break;
+	case MAIN_LOOP_RUN_INIT:
+		printf("Starting init\n");
+		kline_run_init();
+		main_status = MAIN_LOOP_WAIT_FOR_SYNC;
+		break;
+	case MAIN_LOOP_WAIT_FOR_SYNC:
+		if(kline_sync_received()) {
+			main_status = MAIN_LOOP_WAIT_FOR_KW2;
+		}
+		break;
+	case MAIN_LOOP_WAIT_FOR_KW2:
+		if(kline_kw2_ready()) {
+			start_delay(30, MAIN_LOOP_SEND_INV_KW2);
+		}
+		break;
+	case MAIN_LOOP_SEND_INV_KW2: ;
+		uint8_t not_kw2 = (~kline_get_kw2()) & 0xff;
+		HAL_UART_Transmit(&huart4, &not_kw2, 1, HAL_MAX_DELAY);
+		main_status = MAIN_LOOP_WAIT_FOR_INV_ADDR;
+		break;
+	case MAIN_LOOP_WAIT_FOR_INV_ADDR:
+		if(kline_not_addr_ready()) {
+			printf("Init complete\n");
+			start_delay(1000, MAIN_LOOP_SEND_KEEPALIVE);
+		}
+		break;
+	case MAIN_LOOP_SEND_KEEPALIVE:
+		kline_send_command(0x01, 0x00, 10);
+		main_status = MAIN_LOOP_READ_COMMAND_RESULT;
+		write_bytes = 0;
+		break;
+	case MAIN_LOOP_SEND_REGULAR_COMMAND:
+		kline_send_command(0x01, 0x1c, 7);
+		main_status = MAIN_LOOP_READ_COMMAND_RESULT;
+		write_bytes = 1;
+		break;
+	case MAIN_LOOP_READ_COMMAND_RESULT:
+		switch(kline_get_command_status()) {
+			case COMMAND_TIMEOUT:
+				LOG("WARN: Command timed out (rx %u)!\n", kline_get_bytes_received());
+			case COMMAND_SUCCESS:
+				if(write_bytes) {
+					uint8_t n = kline_get_bytes_received();
+					for(uint8_t i = 0; i < n; i++) {
+						printf("0x%02x ", kline_get_byte(i));
+					}
+					printf("\n");
+				}
+				start_delay(1000, MAIN_LOOP_SEND_KEEPALIVE);
+				HAL_Delay(200);
+			case COMMAND_WAITING:
+				break;
+		}
+		break;
+	}
+
+	/*
+	printf("Sending data\n");
+	kw2_state = WAITING_FOR_SYNC;
+	printf("Running init with address " STR(KLINE_INIT_ADDRESS) "\n");
+	kline_run_init(KLINE_INIT_ADDRESS);
+
+	while(kw2_state != WAITING_FOR_NOT_ADDR)
+	  ;
+
+	HAL_Delay(30);
+
+	uint8_t data = not_kw2;
+	HAL_ASSERT(HAL_UART_Transmit(&huart4, &data, 1, 1000));
+	lcd_text_printf("Sent 0x%x\n", data);
+
+	while(kw2_state != INIT_DONE)
+	  ;
+
+
+	HAL_Delay(2000);
+	lcd_text_puts("Init successful\n");
+	HAL_Delay(2000);
+	update_lcd_command(current_command);
+	lcd_clear();
+	main_status = MAIN_LOOP_SEND_SPEED;
+	*/
   /* USER CODE END 3 */
+  }
 }
 
 /**
