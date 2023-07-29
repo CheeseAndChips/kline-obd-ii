@@ -10,10 +10,11 @@ enum kline_command_status {
 
 void kline_setup(TIM_HandleTypeDef *_htim, UART_HandleTypeDef *_huart);
 void kline_tim_callback(void);
-void kline_run_init();
+void kline_run_init(uint8_t address);
 void kline_5baud_gpio_init(void);
 void kline_5baud_gpio_deinit(void);
 enum kline_command_status kline_get_command_status();
+uint8_t kline_init_done(void);
 uint8_t kline_sync_received(void);
 uint8_t kline_get_kw2(void);
 uint8_t kline_kw2_ready(void);

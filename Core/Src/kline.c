@@ -1,4 +1,5 @@
 #include "kline.h"
+#include "stm32f4xx_hal_gpio.h"
 // #include "lcd.h"
 
 #define COMMAND_BYTES_CNT 6
@@ -16,7 +17,7 @@ enum kline_uart_read_state {
 
 static TIM_HandleTypeDef *htim = NULL;
 static UART_HandleTypeDef *huart = NULL;
-volatile uint8_t kline_init_data;
+volatile uint16_t kline_init_data;
 volatile uint8_t kline_init_bits_left = 0;
 volatile static enum kline_uart_read_state uart_state;
 volatile static uint8_t kw2;	// inverse of the KeyWord2, supplied by the car during initialization
@@ -26,6 +27,7 @@ volatile uint8_t bytes_received[RX_BUFFER_LEN];
 volatile uint8_t cnt_received;
 volatile enum kline_command_status command_status;
 volatile uint8_t expected_bytes;
+volatile uint8_t finished;
 
 void kline_setup(TIM_HandleTypeDef *_htim, UART_HandleTypeDef *_huart) {
 	htim = _htim;
@@ -34,36 +36,35 @@ void kline_setup(TIM_HandleTypeDef *_htim, UART_HandleTypeDef *_huart) {
 }
 
 void kline_tim_callback(void) {
-	// aaargh
-	if(kline_init_bits_left == 9) {
-		kline_init_bits_left--;
-		return;
-	}
-
 	if(!kline_init_bits_left) {
     	HAL_GPIO_WritePin(KLINE_OUT_GPIO_Port, KLINE_OUT_Pin, GPIO_PIN_SET);
-		kline_5baud_gpio_deinit();
 		HAL_ASSERT(HAL_TIM_Base_Stop_IT(htim));
+		finished = 1;
 		//lcd_text_puts("\nDone sending init\n");
 
 		// start listening
-		__HAL_UART_ENABLE_IT(huart, UART_IT_RXNE);
+		// __HAL_UART_ENABLE_IT(huart, UART_IT_RXNE);
 	} else {
-		GPIO_PinState new_state = (kline_init_data & 0x80) ? GPIO_PIN_SET : GPIO_PIN_RESET;
+		GPIO_PinState new_state = (kline_init_data & 0x100) ? GPIO_PIN_SET : GPIO_PIN_RESET;
 		kline_init_data <<= 1;
 		HAL_GPIO_WritePin(KLINE_OUT_GPIO_Port, KLINE_OUT_Pin, new_state);
+		putc(new_state ? '1' : '0', stdout);
+		fflush(stdout);
 		//lcd_text_putc(new_state ? '1' : '0');
 		kline_init_bits_left--;
 	}
 }
 
-void kline_run_init() {
-	uint8_t address = KLINE_INIT_ADDRESS;
-	kline_init_data = ~address;
+uint8_t kline_init_done() {
+	return finished;
+}
+
+void kline_run_init(uint8_t address) {
+	finished = 0;
+	kline_init_data = (~address) & 0xff;
 	kline_init_bits_left = 9;
 	HAL_ASSERT(HAL_TIM_Base_Start_IT(htim));
 	htim->Instance->CNT = 0;
-	HAL_GPIO_WritePin(KLINE_OUT_GPIO_Port, KLINE_OUT_Pin, GPIO_PIN_RESET);
 }
 
 void kline_5baud_gpio_init(void) {
@@ -74,15 +75,20 @@ void kline_5baud_gpio_init(void) {
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     HAL_GPIO_Init(KLINE_OUT_GPIO_Port, &GPIO_InitStruct);
 	HAL_GPIO_WritePin(KLINE_OUT_GPIO_Port, KLINE_OUT_Pin, GPIO_PIN_SET);
+
+    GPIO_InitStruct.Pin = KLINE_IN_Pin;
+    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    HAL_GPIO_Init(KLINE_IN_GPIO_Port, &GPIO_InitStruct);
 }
 
 void kline_5baud_gpio_deinit(void) {
 	GPIO_InitTypeDef GPIO_InitStruct = {0};
     GPIO_InitStruct.Pin = KLINE_OUT_Pin;
-    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-    GPIO_InitStruct.Alternate = GPIO_AF8_UART4;
     HAL_GPIO_Init(KLINE_OUT_GPIO_Port, &GPIO_InitStruct);
 }
 

@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "stm32f4xx_hal.h"
 #include "usb_host.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -173,14 +174,10 @@ void USBH_HID_EventCallback(USBH_HandleTypeDef *phost) {
 
 enum main_loop_state {
 	MAIN_LOOP_DELAY,
+	MAIN_LOOP_GPIO_INIT,
 	MAIN_LOOP_RUN_INIT,
-	MAIN_LOOP_WAIT_FOR_SYNC,
-	MAIN_LOOP_WAIT_FOR_KW2,
-	MAIN_LOOP_SEND_INV_KW2,
-	MAIN_LOOP_WAIT_FOR_INV_ADDR,
-	MAIN_LOOP_SEND_KEEPALIVE,
-	MAIN_LOOP_READ_COMMAND_RESULT,
-	MAIN_LOOP_SEND_REGULAR_COMMAND,
+	MAIN_LOOP_WAIT_FOR_RESPONSE,
+	MAIN_LOOP_WAIT_UNTIL_INIT_DONE,
 };
 
 enum main_loop_state main_status;
@@ -235,16 +232,18 @@ int main(void)
   fflush(stdout);
 
   lcd_init();
-  kline_5baud_gpio_init();
   kline_setup(&htim7, &huart4);
-  printf("GPIO init\n");
-  start_delay(2000, MAIN_LOOP_RUN_INIT);
+  kline_5baud_gpio_init();
+  start_delay(2000, MAIN_LOOP_GPIO_INIT);
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  const uint8_t STARTING_ADDRESS = 0x30;
   uint8_t write_bytes = 0;
+	uint32_t timestamp = 0;
+	uint8_t address = STARTING_ADDRESS;
   while (1)
   {
 	// ...
@@ -252,11 +251,11 @@ int main(void)
     MX_USB_HOST_Process();
 
     /* USER CODE BEGIN 3 */
-	if(HAL_GPIO_ReadPin(USER_Btn_GPIO_Port, USER_Btn_Pin) == GPIO_PIN_SET) {
+	/*if(HAL_GPIO_ReadPin(USER_Btn_GPIO_Port, USER_Btn_Pin) == GPIO_PIN_SET) {
 		if(main_status == MAIN_LOOP_DELAY) {
 			main_status = MAIN_LOOP_SEND_REGULAR_COMMAND;
 		}
-	}
+	}*/
 
 	switch(main_status) {
 	case MAIN_LOOP_DELAY:
@@ -264,59 +263,36 @@ int main(void)
 			main_status = delay_info.new_state;
 		}
 		break;
+	case MAIN_LOOP_GPIO_INIT:
+		start_delay(50, MAIN_LOOP_RUN_INIT);
+		break;
 	case MAIN_LOOP_RUN_INIT:
-		printf("Starting init\n");
-		kline_run_init();
-		main_status = MAIN_LOOP_WAIT_FOR_SYNC;
+		if(timestamp && address == STARTING_ADDRESS){
+			printf("Done. %u %u\n", timestamp, address);
+			Error_Handler();
+		}
+		printf("Address 0x%02x ", address);
+		fflush(stdout);
+		kline_run_init(address);
+		address++;
+		main_status = MAIN_LOOP_WAIT_UNTIL_INIT_DONE;
 		break;
-	case MAIN_LOOP_WAIT_FOR_SYNC:
-		if(kline_sync_received()) {
-			main_status = MAIN_LOOP_WAIT_FOR_KW2;
+	case MAIN_LOOP_WAIT_UNTIL_INIT_DONE:
+		if(kline_init_done()) {
+			main_status = MAIN_LOOP_WAIT_FOR_RESPONSE;
+			timestamp = HAL_GetTick();
 		}
 		break;
-	case MAIN_LOOP_WAIT_FOR_KW2:
-		if(kline_kw2_ready()) {
-			start_delay(30, MAIN_LOOP_SEND_INV_KW2);
+	case MAIN_LOOP_WAIT_FOR_RESPONSE:
+		if(HAL_GPIO_ReadPin(KLINE_IN_GPIO_Port, KLINE_IN_Pin) == GPIO_PIN_RESET) {
+			printf(" OK!\n");
+			start_delay(10000, MAIN_LOOP_GPIO_INIT);
+		} else if(HAL_GetTick() > timestamp + 1100) {
+			putchar('\n');
+			main_status = MAIN_LOOP_GPIO_INIT;
 		}
-		break;
-	case MAIN_LOOP_SEND_INV_KW2: ;
-		uint8_t not_kw2 = (~kline_get_kw2()) & 0xff;
-		HAL_UART_Transmit(&huart4, &not_kw2, 1, HAL_MAX_DELAY);
-		main_status = MAIN_LOOP_WAIT_FOR_INV_ADDR;
-		break;
-	case MAIN_LOOP_WAIT_FOR_INV_ADDR:
-		if(kline_not_addr_ready()) {
-			printf("Init complete\n");
-			start_delay(1000, MAIN_LOOP_SEND_KEEPALIVE);
-		}
-		break;
-	case MAIN_LOOP_SEND_KEEPALIVE:
-		kline_send_command(0x01, 0x00, 10);
-		main_status = MAIN_LOOP_READ_COMMAND_RESULT;
-		write_bytes = 0;
-		break;
-	case MAIN_LOOP_SEND_REGULAR_COMMAND:
-		kline_send_command(0x01, 0x1c, 7);
-		main_status = MAIN_LOOP_READ_COMMAND_RESULT;
-		write_bytes = 1;
-		break;
-	case MAIN_LOOP_READ_COMMAND_RESULT:
-		switch(kline_get_command_status()) {
-			case COMMAND_TIMEOUT:
-				LOG("WARN: Command timed out (rx %u)!\n", kline_get_bytes_received());
-			case COMMAND_SUCCESS:
-				if(write_bytes) {
-					uint8_t n = kline_get_bytes_received();
-					for(uint8_t i = 0; i < n; i++) {
-						printf("0x%02x ", kline_get_byte(i));
-					}
-					printf("\n");
-				}
-				start_delay(1000, MAIN_LOOP_SEND_KEEPALIVE);
-				HAL_Delay(200);
-			case COMMAND_WAITING:
-				break;
-		}
+		fflush(stdout);
+
 		break;
 	}
 
