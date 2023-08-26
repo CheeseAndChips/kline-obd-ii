@@ -18,7 +18,6 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "stm32f4xx_hal.h"
 #include "usb_host.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -234,7 +233,7 @@ int main(void)
   lcd_init();
   kline_setup(&htim7, &huart4);
   kline_5baud_gpio_init();
-  start_delay(2000, MAIN_LOOP_GPIO_INIT);
+  start_delay(6000, MAIN_LOOP_GPIO_INIT);
 
   /* USER CODE END 2 */
 
@@ -244,6 +243,12 @@ int main(void)
   uint8_t write_bytes = 0;
 	uint32_t timestamp = 0;
 	uint8_t address = STARTING_ADDRESS;
+
+	kline_run_init(0xf7);
+	while(!kline_init_done())
+		;
+	while(1) { }
+
   while (1)
   {
 	// ...
@@ -426,7 +431,7 @@ static void MX_UART4_Init(void)
 
   /* USER CODE END UART4_Init 1 */
   huart4.Instance = UART4;
-  huart4.Init.BaudRate = 10400;
+  huart4.Init.BaudRate = 4800;
   huart4.Init.WordLength = UART_WORDLENGTH_8B;
   huart4.Init.StopBits = UART_STOPBITS_1;
   huart4.Init.Parity = UART_PARITY_NONE;

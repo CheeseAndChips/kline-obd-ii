@@ -40,10 +40,11 @@ void kline_tim_callback(void) {
     	HAL_GPIO_WritePin(KLINE_OUT_GPIO_Port, KLINE_OUT_Pin, GPIO_PIN_SET);
 		HAL_ASSERT(HAL_TIM_Base_Stop_IT(htim));
 		finished = 1;
+		kline_5baud_gpio_deinit();
 		//lcd_text_puts("\nDone sending init\n");
 
 		// start listening
-		// __HAL_UART_ENABLE_IT(huart, UART_IT_RXNE);
+		__HAL_UART_ENABLE_IT(huart, UART_IT_RXNE);
 	} else {
 		GPIO_PinState new_state = (kline_init_data & 0x100) ? GPIO_PIN_SET : GPIO_PIN_RESET;
 		kline_init_data <<= 1;
@@ -75,24 +76,22 @@ void kline_5baud_gpio_init(void) {
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     HAL_GPIO_Init(KLINE_OUT_GPIO_Port, &GPIO_InitStruct);
 	HAL_GPIO_WritePin(KLINE_OUT_GPIO_Port, KLINE_OUT_Pin, GPIO_PIN_SET);
-
-    GPIO_InitStruct.Pin = KLINE_IN_Pin;
-    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-    HAL_GPIO_Init(KLINE_IN_GPIO_Port, &GPIO_InitStruct);
 }
 
 void kline_5baud_gpio_deinit(void) {
 	GPIO_InitTypeDef GPIO_InitStruct = {0};
     GPIO_InitStruct.Pin = KLINE_OUT_Pin;
-    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-    HAL_GPIO_Init(KLINE_OUT_GPIO_Port, &GPIO_InitStruct);
+    GPIO_InitStruct.Alternate = GPIO_AF8_UART4;
+    HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 }
 
 void handle_new_byte(uint8_t byte) {
+	printf("B: %02x\n", byte);
+	return;
+
 	const uint8_t KLINE_INIT_ADDRESS_INVERTED = (~(KLINE_INIT_ADDRESS)) & 0xff;
 	switch(uart_state) {
 	case WAITING_FOR_SYNC:
